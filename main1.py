@@ -1,9 +1,14 @@
 import streamlit as st
 import psycopg2
+import os
 import google.generativeai as genai
 import time
 
-# --- Configuration (User will input these in Streamlit UI) ---
+# --- API Configuration ---
+# Set your Gemini API key
+genai.configure(api_key=os.getenv("GEMINI_API_KEY", "AIzaSyATctANfRiXQb5F0kD8nVbynkMejkAjkbI"))
+
+# --- Default DB Configuration (editable in Streamlit) ---
 DB_HOST = "localhost"
 DB_NAME = "postgres"
 DB_USER = "postgres"
@@ -13,7 +18,6 @@ DB_PASSWORD = "postgres123"
 
 def get_db_connection():
     """Establishes and returns a PostgreSQL database connection."""
-    conn = None
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -27,17 +31,14 @@ def get_db_connection():
         return None
 
 def fetch_customers_with_weather(conn):
-    """
-    Fetches customer data and joins with mock weather alerts table on zipcode.
-    Assumes a table 'weather_alerts' with columns: zipcode, city, alert_event, description, sender_name, start, end
-    """
+    """Fetches customer and weather alert data."""
     customers = []
     if conn:
         try:
             cur = conn.cursor()
             cur.execute("""
                 SELECT p.party_name, p.party_type, p.policy_type, p.zipcode, p.email,
-                       w.alert_event, w.description, w.sender_name, w.start, w.end
+                       w.alert_event, w.description, w.sender_name, w.alert_start, w.alert_end
                 FROM party p
                 LEFT JOIN weather_alerts w ON p.zipcode = w.zipcode
             """)
@@ -48,9 +49,7 @@ def fetch_customers_with_weather(conn):
     return customers
 
 def map_alert_to_policy(alert_event):
-    """
-    Maps a weather alert event to relevant policy types.
-    """
+    """Maps a weather alert event to relevant policy types."""
     alert_event_lower = (alert_event or "").lower()
     relevant_policies = []
 
@@ -70,12 +69,12 @@ def map_alert_to_policy(alert_event):
     return list(set(relevant_policies))
 
 def generate_email_with_gemini(customer_name, policy_type, alert_details):
-    """
-    Generates a personalized email using Gemini 2.5 Flash LLM.
-    """
-    if not genai.get_default_model():
-        st.error("Gemini model not configured. Please ensure the API key is set.")
-        return "Error: Gemini model not configured."
+    """Generates a personalized email using Gemini 1.5 Flash model."""
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
+    except Exception as e:
+        st.error(f"Error initializing Gemini model: {e}")
+        return "Error: Gemini model not configured or failed to initialize."
 
     prompt = f"""
     You are an AI assistant for ABCD Insurance.
@@ -99,21 +98,25 @@ def generate_email_with_gemini(customer_name, policy_type, alert_details):
     6. Be professional and empathetic.
     7. Keep it under 200 words.
     """
-    # Replace with your Gemini API call logic
-    return "Mock email content for demonstration."
 
-# --- Streamlit Application Layout ---
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        st.error(f"Error generating content with Gemini: {e}")
+        return "Error: Failed to generate email content."
+
+# --- Streamlit UI ---
+
 st.set_page_config(page_title="ABCD Insurance Weather Alert System", layout="wide")
-
 st.title("⛈️ ABCD Insurance: Personalized Weather Alert Emails 📧")
 st.markdown("""
 This application helps ABCD Insurance identify customers affected by severe weather alerts
 and generate personalized emails using Gemini 2.5 Flash LLM.
 """)
 
-# --- Input Section ---
+# --- Configuration Inputs ---
 st.header("1. Configuration")
-
 with st.expander("PostgreSQL Database Credentials"):
     st.info("Enter your PostgreSQL database connection details.")
     db_host_input = st.text_input("DB Host", value=DB_HOST, key="db_host")
@@ -129,7 +132,7 @@ with st.expander("PostgreSQL Database Credentials"):
 
 st.markdown("---")
 
-# --- Main Application Logic ---
+# --- Main Logic ---
 st.header("2. Generate Weather Alerts & Emails")
 
 if st.button("Fetch Alerts and Generate Emails", help="Click to connect to DB, fetch weather alerts, and generate emails."):
@@ -149,7 +152,7 @@ if st.button("Fetch Alerts and Generate Emails", help="Click to connect to DB, f
                 generated_emails = []
 
                 for i, customer in enumerate(customers_data):
-                    party_name, party_type, policy_type, zipcode, email, alert_event, description, sender_name, start, end = customer
+                    party_name, party_type, policy_type, zipcode, email, alert_event, description, sender_name, alert_start, alert_end = customer
 
                     if alert_event:
                         relevant_policies = map_alert_to_policy(alert_event)
@@ -159,8 +162,8 @@ if st.button("Fetch Alerts and Generate Emails", help="Click to connect to DB, f
                                 "event": alert_event,
                                 "description": description,
                                 "sender_name": sender_name,
-                                "start": start,
-                                "end": end
+                                "start": alert_start,
+                                "end": alert_end
                             }
                             with st.spinner(f"Generating email for {party_name} about {alert_event}..."):
                                 email_content = generate_email_with_gemini(
@@ -180,6 +183,7 @@ if st.button("Fetch Alerts and Generate Emails", help="Click to connect to DB, f
                     else:
                         st.info(f"No active severe weather alerts for zipcode {zipcode}.")
 
+                # Display Generated Emails
                 st.markdown("---")
                 st.header("3. Generated Personalized Emails")
 
@@ -196,4 +200,3 @@ if st.button("Fetch Alerts and Generate Emails", help="Click to connect to DB, f
                 st.warning("No customers found in the 'party' table. Please ensure your database is populated.")
         else:
             st.error("Could not establish a database connection. Please check your credentials.")
-# ...existing code...
